@@ -1,11 +1,12 @@
 import numpy as np
 
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import torch.autograd as autograd
 
 # Our neural network used by MINE
-from models import mine_net
+from src.models import mine_net
 
 
 # Use GPU if available, otherwise CPU
@@ -289,3 +290,295 @@ class mine:
         results = self.trip_initialiser()
 
         return results
+
+
+
+    # A faster classification method
+class mine_fa:
+
+    def __init__(
+        self,
+        p_dis,
+        q_dis,
+        num_iterations,
+        all=True,
+        batch_size=512,
+        lr=0.0001
+    ):
+
+        # Learning rate
+        self.lr = lr
+
+        self.all = all
+
+        # Convert X into tensor
+        if not isinstance(p_dis, torch.Tensor):
+            p_dis = torch.tensor(
+                p_dis,
+                dtype=torch.float32
+            )
+
+        # Convert Y into tensor
+        if not isinstance(q_dis, torch.Tensor):
+            q_dis = torch.tensor(
+                q_dis,
+                dtype=torch.float32
+            )
+
+        # Batch cannot be bigger than dataset
+        self.batch_size = min(
+            batch_size,
+            p_dis.shape[0]
+        )
+
+        # Number of training iterations
+        self.num_iterations = num_iterations
+
+        # Store X and Y
+        self.p_dis = p_dis
+        self.q_dis = q_dis
+
+        # Make X 2D if needed
+        if len(self.p_dis.shape) == 1:
+            self.p_dis = self.p_dis.unsqueeze(1)
+
+        # Make Y 2D if needed
+        if len(self.q_dis.shape) == 1:
+            self.q_dis = self.q_dis.unsqueeze(1)
+
+        # Repeat experiment 3 times
+        self.expts = 3
+    def create_regressor(self):
+
+         return nn.Sequential(
+
+            # Input features -> 10 neurons
+            nn.Linear(
+                self.p_dis.shape[1],
+                10
+            ),
+
+            nn.ReLU(),
+
+            # 10 -> 10
+            nn.Linear(10, 10),
+
+            nn.ReLU(),
+
+            # 10 -> number of target classes
+            nn.Linear(
+                10,
+                len(np.unique(self.q_dis.squeeze()))
+            ),
+
+            # Convert output to log probabilities
+            nn.LogSoftmax(dim=1)
+         ).to(device)
+    def fit_mlp(self):
+
+        # X = features
+        p_dis = self.p_dis
+
+        # Y = labels
+        # NLLLoss needs class labels as integers
+        q_dis = self.q_dis.long()
+
+
+        # -----------------------------
+        # PART 1: TRAIN WITH FEATURES
+        # -----------------------------
+
+        # Loss function
+        criterion = nn.NLLLoss()
+
+        # Create our small classifier
+        mlp_regressor = self.create_regressor().train()
+
+        # Optimizer updates network weights
+        optimizer = optim.SGD(
+            mlp_regressor.parameters(),
+            lr=self.lr,
+            momentum=0.9
+        )
+
+        # Store loss after every iteration
+        losses_feats = []
+
+
+        # Train for num_iterations
+        for epoch in range(self.num_iterations):
+
+            # Randomly shuffle row numbers
+            permutation = torch.randperm(
+                p_dis.size()[0]
+            )
+
+            losses = []
+
+            # Take data batch by batch
+            for i in range(
+                0,
+                p_dis.size()[0],
+                self.batch_size
+            ):
+
+                indices = permutation[
+                    i:i + self.batch_size
+                ]
+
+                # Use only complete batches
+                if len(indices) == self.batch_size:
+
+                    # Get X batch
+                    batch_p_dis = p_dis[
+                        indices
+                    ].to(device)
+
+                    # Get matching Y batch
+                    batch_q_dis = q_dis[
+                        indices
+                    ].to(device)
+
+                    # Predict Y using X
+                    predictions = mlp_regressor(
+                        batch_p_dis
+                    )
+
+                    # Compare prediction with real Y
+                    loss = criterion(
+                        predictions,
+                        batch_q_dis.squeeze()
+                        if len(batch_q_dis.shape) > 1
+                        else batch_q_dis
+                    )
+
+                    # Clear old gradients
+                    optimizer.zero_grad()
+
+                    # Calculate gradients
+                    loss.backward()
+
+                    # Update network
+                    optimizer.step()
+
+                    # Save loss
+                    losses.append(
+                        loss.item()
+                    )
+
+            # Average loss for this epoch
+            losses_feats.append(
+                np.array(losses).mean()
+            )
+
+
+        # --------------------------------
+        # PART 2: TRAIN WITHOUT FEATURES
+        # --------------------------------
+
+        losses_no_feats = []
+
+        # Create a fresh classifier
+        mlp_regressor = self.create_regressor().train()
+
+        criterion = nn.NLLLoss()
+
+        optimizer = optim.SGD(
+            mlp_regressor.parameters(),
+            lr=self.lr,
+            momentum=0.9
+        )
+
+
+        for epoch in range(self.num_iterations):
+
+            permutation = torch.randperm(
+                p_dis.size()[0]
+            )
+
+            losses = []
+
+            for i in range(
+                0,
+                p_dis.size()[0],
+                self.batch_size
+            ):
+
+                indices = permutation[
+                    i:i + self.batch_size
+                ]
+
+                if len(indices) == self.batch_size:
+
+                    # Only need Y here
+                    batch_q_dis = q_dis[
+                        indices
+                    ].to(device)
+
+                    optimizer.zero_grad()
+
+                    # Give ZERO features to classifier
+                    zero_features = torch.zeros(
+                          len(indices),
+                     p_dis.shape[1],
+                    dtype=torch.float32,
+                    device=device
+                            ) 
+
+                    predictions = mlp_regressor(zero_features)
+
+                    # Calculate loss
+                    loss = criterion(
+                        predictions,
+                        batch_q_dis.squeeze()
+                        if len(batch_q_dis.shape) > 1
+                        else batch_q_dis
+                    )
+
+                    # Train
+                    loss.backward()
+                    optimizer.step()
+
+                    # Save loss
+                    losses.append(
+                        loss.item()
+                    )
+
+            # Average loss for this epoch
+            losses_no_feats.append(
+                np.array(losses).mean()
+            )
+
+
+        # How much better were real features
+        # compared with having no information?
+        return (
+            np.array(losses_no_feats)
+            - np.array(losses_feats)
+        )
+    def ma(self, a, window_size=100):
+        """
+        Moving average.
+        Smooths the noisy information-score curve.
+        """
+
+        ret = np.cumsum(a, dtype=float)
+
+        ret[window_size:] = (
+            ret[window_size:] - ret[:-window_size]
+        )
+
+        return ret[window_size - 1:] / window_size
+
+
+    def run(self):
+ 
+     trip_results = []
+ 
+     for expt in range(self.expts):
+
+        result = self.fit_mlp()
+
+        trip_results.append(result)
+
+     return np.array(trip_results)
