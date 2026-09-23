@@ -4,21 +4,18 @@ import torch.nn as nn
 import torch.optim as optim
 
 from torch.utils.data import TensorDataset, DataLoader
-from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, f1_score
+from src.fsnid_fs import fsnid_selection
 
 from src.classifier import FeatureClassifier
-
 
 # =========================================================
 # SETTINGS
 # =========================================================
 
-BATCH_SIZE = 512
+BATCH_SIZE = 1024
 EPOCHS = 100
 LEARNING_RATE = 0.01
-
-FSNID_FEATURES = [12, 5, 2]
 
 device = torch.device(
     "cuda" if torch.cuda.is_available() else "cpu"
@@ -26,63 +23,82 @@ device = torch.device(
 
 print("Device:", device)
 
-
 # =========================================================
 # LOAD DATA
 # =========================================================
+x = np.load("data/processed/NSL-KDD/X_train.npy")
+y = np.load("data/processed/NSL-KDD/y_train.npy", allow_pickle=True)
 
-X_train = np.load(
-    "data/processed/NSL-KDD/X_train.npy"
-)
+np.random.seed(42)
 
-X_test = np.load(
-    "data/processed/NSL-KDD/X_test.npy"
-)
+indices = np.random.permutation(len(x))
+split = int(0.8*len(x))
+train_index, test_index = indices[:split], indices[split:]
 
-y_train = np.load(
-    "data/processed/NSL-KDD/y_train.npy",
-    allow_pickle=True
-)
+X_train = x[train_index]
+y_train = y[train_index]
 
-y_test = np.load(
-    "data/processed/NSL-KDD/y_test.npy",
-    allow_pickle=True
-)
+X_test = x[test_index]
+y_test = y[test_index]
 
 print("Train:", X_train.shape)
 print("Test :", X_test.shape)
-
 
 # =========================================================
 # LABEL ENCODING
 # =========================================================
 
-# Fit using train + test so every NSL-KDD class receives
-# a valid integer ID.
-encoder = LabelEncoder()
+DOS_ATTACKS = {
+    "back", "land", "neptune", "pod", "smurf",
+    "teardrop", "apache2", "mailbomb", "processtable",
+    "udpstorm", "worm"
+}
 
-encoder.fit(
-    np.concatenate([y_train, y_test])
-)
+PROBE_ATTACKS = {
+    "ipsweep", "nmap", "portsweep", "satan",
+    "mscan", "saint"
+}
 
-y_train_encoded = encoder.transform(y_train)
-y_test_encoded = encoder.transform(y_test)
+R2L_ATTACKS = {
+    "ftp_write", "guess_passwd", "imap", "multihop",
+    "phf", "spy", "warezclient", "warezmaster",
+    "httptunnel", "named", "sendmail", "snmpgetattack",
+    "snmpguess", "xlock", "xsnoop", "xterm"
+}
 
-num_classes = len(encoder.classes_)
+U2R_ATTACKS = {
+    "buffer_overflow", "loadmodule", "perl", "rootkit",
+    "ps", "sqlattack"
+}
 
-print("Number of classes:", num_classes)
+def mapCategory(label):
+    if label == "normal":
+        return 0
+    elif label in DOS_ATTACKS:
+        return 1
+    elif label in PROBE_ATTACKS:
+        return 2
+    elif label in R2L_ATTACKS:
+        return 3
+    elif label in U2R_ATTACKS:
+        return 4
+    else:
+        raise ValueError(f"Unknown attack label: {label}")
 
+y_train_encoded = np.array([mapCategory(i) for i in y_train])
+y_test_encoded = np.array([mapCategory(i) for i in y_test])
+
+num_classes = 5
+
+print("Number of classes: ", num_classes)
+print("Training class counts: ", np.bincount(y_train_encoded))
+print("Testing class counts: ", np.bincount(y_test_encoded))
 
 # =========================================================
 # TRAIN + EVALUATE
 # =========================================================
 
-def run_experiment(
-    X_train_data,
-    X_test_data,
-    seed
-):
-
+def run_experiment(X_train_data, X_test_data, seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
@@ -122,11 +138,9 @@ def run_experiment(
 
     criterion = nn.NLLLoss()
 
-    optimizer = optim.SGD(
-        model.parameters(),
-        lr=LEARNING_RATE
-    )
-
+    optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9)
+    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[150,250], gamma=0.1)
+    
     model.train()
 
     for epoch in range(EPOCHS):
@@ -150,6 +164,7 @@ def run_experiment(
             loss.backward()
 
             optimizer.step()
+            scheduler.step()
 
             total_loss += loss.item()
 
@@ -193,99 +208,104 @@ def run_experiment(
 
     return accuracy, f1
 
-
-# # =========================================================
-# FINAL EXPERIMENT — 5 SEEDS
-# =========================================================
-
-seeds = [0, 1, 2, 3, 4]
-
-X_train_fsnid = X_train[:, FSNID_FEATURES]
-X_test_fsnid = X_test[:, FSNID_FEATURES]
-
-all_results = []
-fsnid_results = []
-
-
-for seed in seeds:
-
-    print(f"\n================================")
-    print(f"SEED {seed}")
-    print(f"================================")
-
-    print("\nALL 41 FEATURES")
-
-    acc, f1 = run_experiment(
-        X_train,
-        X_test,
-        seed
-    )
-
-    all_results.append([acc, f1])
-
-    print(
-        f"Accuracy: {acc:.4f} | "
-        f"F1: {f1:.4f}"
-    )
-
-
-    print("\nFSNID TOP-3 FEATURES")
-
-    acc, f1 = run_experiment(
-        X_train_fsnid,
-        X_test_fsnid,
-        seed
-    )
-
-    fsnid_results.append([acc, f1])
-
-    print(
-        f"Accuracy: {acc:.4f} | "
-        f"F1: {f1:.4f}"
-    )
-
-
-# =========================================================
-# MEAN + 95% CONFIDENCE INTERVAL
-# =========================================================
-
-def summarize(results):
-
+def conclusion(results):
     results = np.array(results)
 
     mean = results.mean(axis=0)
     std = results.std(axis=0, ddof=1)
 
-    ci95 = 1.96 * std / np.sqrt(len(results))
+    ci = 1.96*std/np.sqrt(len(results))
+    return mean, ci
 
-    return mean, ci95
+# =========================================================
+# BASELINE — ALL 41 FEATURES
+# =========================================================
+seeds = [0, 1, 2]
+total = []
 
+print("\n================================")
+print("BASELINE — ALL 41 FEATURES")
+print("================================")
+for i in seeds:
+    print(f"\nSEED {i}")
 
-all_mean, all_ci = summarize(all_results)
-fsnid_mean, fsnid_ci = summarize(fsnid_results)
+    acc, f1 = run_experiment(X_train, X_test, i)
+    total.append([acc, f1])
 
+    print(
+        f"Accuracy: {acc:.4f} | "
+        f"F1: {f1:.4f}"
+    )
+
+totalMean, totalCI = conclusion(total)
+
+print("\nBASELINE RESULTS")
+print(
+    f"Accuracy: "
+    f"{totalMean[0] * 100:.2f}% "
+    f"± {totalCI[0] * 100:.2f}%"
+)
+
+print(
+    f"Weighted F1: "
+    f"{totalMean[1] * 100:.2f}% "
+    f"± {totalCI[1] * 100:.2f}%"
+)
+
+# =========================================================
+# FSNID FEATURE SELECTION
+# =========================================================
+FSNID_FEATURES = [4, 11, 12, 15, 18, 20, 23, 26, 27, 31, 36, 38]
+print("FSNID Selected Features:", FSNID_FEATURES)
+
+# =========================================================
+# FINAL EXPERIMENT — 5 SEEDS
+# =========================================================
+seeds = [0, 1, 2, 3, 4]
+
+X_train_fsnid = X_train[:, FSNID_FEATURES]
+X_test_fsnid = X_test[:, FSNID_FEATURES]
+
+total_fsnid = []
+
+for i in seeds:
+    print("\n================================")
+    print(f"FSNID SEED {i}")
+    print("================================")
+
+    acc, f1 = run_experiment(X_train_fsnid, X_test_fsnid, i)
+    total_fsnid.append([acc, f1])
+
+    print(
+        f"Accuracy: {acc:.4f} | "
+        f"F1: {f1:.4f}"
+    )
+
+# =========================================================
+# MEAN + 95% CONFIDENCE INTERVAL
+# =========================================================
+totalMean, totalCI = conclusion(total)
+fsnid_mean, fsnid_ci = conclusion(total_fsnid)
 
 print("\n\n================================")
 print("FINAL RESULTS")
 print("================================")
 
 print("\nALL 41 FEATURES")
-
 print(
     f"Accuracy: "
-    f"{all_mean[0] * 100:.2f}% "
-    f"± {all_ci[0] * 100:.2f}%"
+    f"{totalMean[0] * 100:.2f}% "
+    f"± {totalCI[0] * 100:.2f}%"
 )
 
 print(
     f"Weighted F1: "
-    f"{all_mean[1] * 100:.2f}% "
-    f"± {all_ci[1] * 100:.2f}%"
+    f"{totalMean[1] * 100:.2f}% "
+    f"± {totalCI[1] * 100:.2f}%"
 )
 
 
-print("\nFSNID TOP-3 FEATURES")
-
+print("\nFSNID SELECTED FEATURES")
 print(
     f"Accuracy: "
     f"{fsnid_mean[0] * 100:.2f}% "

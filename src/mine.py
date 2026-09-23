@@ -349,8 +349,7 @@ class mine_fa:
         # Repeat experiment 3 times
         self.expts = 3
     def create_regressor(self):
-
-         return nn.Sequential(
+        return nn.Sequential(
 
             # Input features -> 10 neurons
             nn.Linear(
@@ -373,7 +372,8 @@ class mine_fa:
 
             # Convert output to log probabilities
             nn.LogSoftmax(dim=1)
-         ).to(device)
+        ).to(device)
+        
     def fit_mlp(self):
 
         # X = features

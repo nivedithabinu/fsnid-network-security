@@ -12,16 +12,14 @@ class FeatureClassifier(nn.Module):
     def __init__(self, input_size, num_classes):
         super().__init__()
 
-        self.fc1 = nn.Linear(input_size, 50)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(50, num_classes)
-        self.log_softmax = nn.LogSoftmax(dim=1)
+        self.net = nn.Sequential(
+            nn.Linear(input_size,250),
+            nn.ReLU(),
+            nn.Linear(250,250),
+            nn.ReLU(),
+            nn.Linear(250,num_classes),
+            nn.LogSoftmax(dim=1)
+        )
 
     def forward(self, x):
-
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.log_softmax(x)
-
-        return x
+        return self.net(x)
