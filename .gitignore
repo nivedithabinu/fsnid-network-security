@@ -1,7 +1,7 @@
 .venv/
 venv/
 Lib/
-Scripts/
+/venv/Scripts/
 pyvenv.cfg
 __pycache__/
 *.pyc
