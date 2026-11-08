@@ -19,17 +19,17 @@ class SharedDiscriminatorClassifier(nn.Module):
         super().__init__()
         # Shared feature extraction layers
         self.shared_layers = nn.Sequential(
-            nn.Linear(input_dimensions, hidden_dim1),
+            nn.utils.spectral_norm(nn.Linear(input_dimensions, hidden_dim1)),
             nn.LeakyReLU(0.2),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim1, hidden_dim2),
+            nn.utils.spectral_norm(nn.Linear(hidden_dim1, hidden_dim2)),
             nn.LeakyReLU(0.2),
             nn.Dropout(dropout)
         )
         
         # Wasserstein critic head
         # No sigmoid: the critic produces unrestricted real-valued scores.
-        self.critic_head = nn.Linear(hidden_dim2, 1)
+        self.critic_head = nn.utils.spectral_norm(nn.Linear(hidden_dim2, 1))
 
         # Five-class classification head
         # Returns logits; softmax is applied only when probabilities are needed.
